@@ -10,6 +10,7 @@ import (
 	"bufio"
 	"crypto/sha1"
 	"flag"
+	"time"
 	"fmt"
 	"io"
 	"log"
@@ -43,7 +44,7 @@ func (s session) Close() error {
 }
 
 // redial continually connects to the URL, exiting the program when no longer possible
-func redial(ctx context.Context, url string) chan chan session {
+func redial(ctx context.Context, url string, done context.CancelFunc) chan chan session {
 	sessions := make(chan chan session)
 
 	go func() {
@@ -57,19 +58,25 @@ func redial(ctx context.Context, url string) chan chan session {
 				log.Println("shutting down session factory")
 				return
 			}
-
 			conn, err := amqp.Dial(url)
 			if err != nil {
-				log.Fatalf("cannot (re)dial: %v: %q", err, url)
+				log.Printf("cannot (re)dial: %v: %q", err, url)
+				done()
+				continue
 			}
 
 			ch, err := conn.Channel()
 			if err != nil {
-				log.Fatalf("cannot create channel: %v", err)
+				log.Printf("cannot create channel: %v", err)
+                                conn.Close()
+				done()
+                                continue
 			}
 
 			if err := ch.ExchangeDeclare(exchange, "fanout", false, true, false, false, nil); err != nil {
-				log.Fatalf("cannot declare fanout exchange: %v", err)
+				log.Printf("cannot declare fanout exchange: %v", err)
+				done()
+                                continue
 			}
 
 			select {
@@ -217,18 +224,20 @@ func write(w io.Writer) chan<- message {
 
 func main() {
 	flag.Parse()
-
+     for {
 	ctx, done := context.WithCancel(context.Background())
 
 	go func() {
-		publish(redial(ctx, *url), read(os.Stdin))
+		publish(redial(ctx, *url, done), read(os.Stdin))
 		done()
 	}()
 
 	go func() {
-		subscribe(redial(ctx, *url), write(os.Stdout))
+		subscribe(redial(ctx, *url, done), write(os.Stdout))
 		done()
 	}()
 
 	<-ctx.Done()
+        time.Sleep(5000 * time.Millisecond)
+     }
 }
